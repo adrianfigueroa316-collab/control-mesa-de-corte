@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reductor de diagramas de bloques – Control de posición</title>
+<style>
+  :root{--bg:#f6f5f1;--card:#fff;--ink:#1d1d1b;--muted:#6b6a64;--acc:#1f5f8b;--ok:#2e7d4f;--line:#dddbd3}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.45}
+  header{padding:22px 28px;border-bottom:1px solid var(--line);background:var(--card)}
+  header h1{margin:0;font-size:1.35rem}
+  header p{margin:4px 0 0;color:var(--muted);font-size:.92rem}
+  main{max-width:1100px;margin:0 auto;padding:22px;display:grid;grid-template-columns:330px 1fr;gap:20px}
+  @media(max-width:850px){main{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px}
+  h2{font-size:1rem;margin:0 0 12px;color:var(--acc)}
+  h3{font-size:.9rem;margin:16px 0 6px}
+  label{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:6px 0;font-size:.9rem}
+  input{width:120px;padding:5px 7px;border:1px solid var(--line);border-radius:6px;font:inherit;text-align:right}
+  button{margin-top:14px;width:100%;padding:9px;border:0;border-radius:7px;background:var(--acc);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+  .tf{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92rem;background:#f1f0eb;border-radius:6px;padding:8px 10px;margin:4px 0 10px;overflow-x:auto;white-space:pre}
+  table{border-collapse:collapse;width:100%;font-size:.88rem}
+  th,td{border:1px solid var(--line);padding:5px 8px;text-align:right}
+  th{background:#f1f0eb;text-align:center}
+  td:first-child{text-align:left}
+  .ok{color:var(--ok);font-weight:700}
+  .bad{color:#b23b3b;font-weight:700}
+  .steps li{margin-bottom:8px}
+  small{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Reductor de diagramas de bloques — Control de posición de cabezal</h1>
+  <p>Polinomios en s · funciones serie, paralelo y realimentación · polos, ceros y ganancia estacionaria</p>
+</header>
+<main>
+<section class="card">
+  <h2>Entradas (Ω y F)</h2>
+  <h3>Controlador PI</h3>
+  <label>R₁ [Ω]<input id="R1" value="10e3"></label>
+  <label>R₂ [Ω]<input id="R2" value="25e3"></label>
+  <label>C [F]<input id="C" value="50e-6"></label>
+  <h3>Filtro del sensor H₂</h3>
+  <label>Rₐ [Ω]<input id="Ra" value="10e3"></label>
+  <label>R_f [Ω]<input id="Rf" value="10e3"></label>
+  <label>C_f [F]<input id="Cf" value="10e-6"></label>
+  <h3>Tacómetro H₁</h3>
+  <label>R_f tac [Ω]<input id="Rft" value="10e3"></label>
+  <label>R_in tac [Ω]<input id="Rit" value="20e3"></label>
+  <h3>Planta</h3>
+  <label>K_m<input id="Km" value="13"></label>
+  <label>polo motor a (G₂=K_m/(s+a))<input id="a" value="5"></label>
+  <button onclick="run()">Calcular</button>
+  <p><small>G₃ = 1/s (integrador velocidad → posición).</small></p>
+</section>
+
+<section>
+  <div class="card">
+    <h2>Bloques obtenidos de los circuitos</h2>
+    <div id="blocks"></div>
+  </div>
+  <div class="card" style="margin-top:20px">
+    <h2>Reducción paso a paso</h2>
+    <ol class="steps" id="steps"></ol>
+  </div>
+  <div class="card" style="margin-top:20px">
+    <h2>Resultado C(s)/R(s)</h2>
+    <div id="result"></div>
+  </div>
+</section>
+</main>
+
+<script>
+// ---------- Polinomios: arreglos de coeficientes, potencia mayor primero ----------
+const trim = p => { let i=0; while(i<p.length-1 && Math.abs(p[i])<1e-14) i++; return p.slice(i); };
+function pmul(a,b){ const r=new Array(a.length+b.length-1).fill(0);
+  a.forEach((x,i)=>b.forEach((y,j)=>r[i+j]+=x*y)); return trim(r); }
+function padd(a,b){ const n=Math.max(a.length,b.length);
+  const A=Array(n-a.length).fill(0).concat(a), B=Array(n-b.length).fill(0).concat(b);
+  return trim(A.map((x,i)=>x+B[i])); }
+const polyval=(p,x)=>p.reduce((acc,c)=>acc*x+c,0);
+
+// ---------- Funciones de transferencia {n, d} ----------
+const tf=(n,d)=>({n:trim(n),d:trim(d)});
+const serie=(G,H)=>tf(pmul(G.n,H.n),pmul(G.d,H.d));
+const paralelo=(G,H)=>tf(padd(pmul(G.n,H.d),pmul(H.n,G.d)),pmul(G.d,H.d));
+const realim=(G,H)=>tf(pmul(G.n,H.d),padd(pmul(G.d,H.d),pmul(G.n,H.n))); // negativa
+function monica(T){ const k=T.d[0]; return tf(T.n.map(c=>c/k),T.d.map(c=>c/k)); }
+
+// ---------- Raíces (Durand–Kerner) ----------
+function roots(p){
+  p=trim(p); const n=p.length-1; if(n<1) return [];
+  const a=p.map(c=>c/p[0]);
+  let z=[]; for(let k=0;k<n;k++){ const ang=2*Math.PI*k/n+0.4; z.push([0.9*Math.cos(ang)*(1+Math.abs(a[n])),0.9*Math.sin(ang)*(1+Math.abs(a[n]))]); }
+  const cm=(x,y)=>[x[0]*y[0]-x[1]*y[1],x[0]*y[1]+x[1]*y[0]];
+  const cd=(x,y)=>{const q=y[0]*y[0]+y[1]*y[1];return[(x[0]*y[0]+x[1]*y[1])/q,(x[1]*y[0]-x[0]*y[1])/q];};
+  for(let it=0;it<2000;it++){
+    let maxd=0;
+    for(let i=0;i<n;i++){
+      let num=[1,0]; for(let k=1;k<=n;k++){ num=cm(num,z[i]); num[0]+=a[k]; }
+      let den=[1,0]; for(let j=0;j<n;j++) if(j!==i) den=cm(den,[z[i][0]-z[j][0],z[i][1]-z[j][1]]);
+      const dz=cd(num,den); z[i]=[z[i][0]-dz[0],z[i][1]-dz[1]]; maxd=Math.max(maxd,Math.hypot(dz[0],dz[1]));
+    }
+    if(maxd<1e-13) break;
+  }
+  return z.map(([re,im])=>[re,Math.abs(im)<1e-8?0:im]).sort((x,y)=>y[0]-x[0]||y[1]-x[1]);
+}
+
+// ---------- Formato ----------
+const f=(x,d=4)=>{ const r=+x.toFixed(d); return (Object.is(r,-0)?0:r).toString(); };
+function pstr(p){
+  p=trim(p); const n=p.length-1; let s='';
+  p.forEach((c,i)=>{ const e=n-i; if(Math.abs(c)<1e-12) return;
+    const sg=c<0?' − ':(s?' + ':''); const m=Math.abs(c);
+    const cs=(m===1&&e>0)?'':f(m); const xs=e===0?'':(e===1?'s':'s^'+e);
+    s+=sg+cs+xs; });
+  return s||'0';
+}
+function tfstr(T){ const N=pstr(T.n), D=pstr(T.d); const w=Math.max(N.length,D.length);
+  const c=t=>' '.repeat(Math.floor((w-t.length)/2))+t; return c(N)+'\n'+'─'.repeat(w)+'\n'+c(D); }
+const rstr=r=>r[1]===0?f(r[0]):`${f(r[0])} ± j${f(Math.abs(r[1]))}`;
+function rootList(p){ const r=roots(p), out=[]; r.forEach(x=>{ if(x[1]<0) return; out.push(rstr(x)); }); return out; }
+
+// ---------- Programa ----------
+function v(id){ return Number(eval(document.getElementById(id).value)); }
+function run(){
+  const R1=v('R1'),R2=v('R2'),C=v('C'),Ra=v('Ra'),Rf=v('Rf'),Cf=v('Cf'),Rft=v('Rft'),Rit=v('Rit'),Km=v('Km'),a=v('a');
+  const Kp=R2/R1, Ki=1/(R1*C), K2=Rf/Ra, tau=Rf*Cf, h1=Rft/Rit;
+
+  const GKp=tf([Kp],[1]), GKi=tf([Ki],[1,0]);
+  const Gc=paralelo(GKp,GKi);                 // Kp + Ki/s
+  const H2=tf([K2],[tau,1]);                   // K/(τs+1)
+  const H1=tf([h1],[1]);
+  const G2=tf([Km],[1,a]), G3=tf([1],[1,0]);
+
+  document.getElementById('blocks').innerHTML=`
+    <b>G<sub>c</sub>(s) = K<sub>p</sub> + K<sub>i</sub>/s</b> &nbsp; K<sub>p</sub> = R₂/R₁ = ${f(Kp)}, &nbsp; K<sub>i</sub> = 1/(R₁C) = ${f(Ki)} s⁻¹
+    <div class="tf">${tfstr(Gc)}</div>
+    <b>H₂(s) = K/(τs+1)</b> &nbsp; K = R_f/Rₐ = ${f(K2)}, &nbsp; τ = R_fC_f = ${f(tau)} s
+    <div class="tf">${tfstr(H2)}</div>
+    <b>H₁ = R_f/R_in = ${f(h1)}</b> ${Math.abs(h1-0.5)<1e-9?'<span class="ok">✓ = 0.5</span>':''}`;
+
+  const Gi=realim(G2,H1);                       // lazo interno
+  const G=serie(serie(Gc,Gi),G3);               // directa
+  const T=monica(realim(G,H2));                 // lazo externo
+  const W=monica(realim(serie(Gc,Gi),serie(G3,H2))); // Ω(s)/R(s)
+
+  document.getElementById('steps').innerHTML=`
+    <li><b>Paralelo</b> (suma de bloques): G<sub>c</sub> = K<sub>p</sub> + K<sub>i</sub>/s<div class="tf">${tfstr(Gc)}</div></li>
+    <li><b>Realimentación</b> (lazo interno): G₂/(1+G₂H₁)<div class="tf">${tfstr(monica(Gi))}</div></li>
+    <li><b>Serie</b> (producto): G = G<sub>c</sub>·[lazo interno]·G₃<div class="tf">${tfstr(monica(G))}</div></li>
+    <li><b>Realimentación</b> (lazo externo): G/(1+G·H₂)<div class="tf">${tfstr(T)}</div></li>`;
+
+  const k0=polyval(T.n,0)/polyval(T.d,0);
+  const deg=T.d.length-1; let rows='';
+  for(let i=0;i<=deg;i++){ const e=deg-i; const ni=T.n.length-1-e;
+    rows+=`<tr><td>s^${e}</td><td>${ni>=0?f(T.n[ni]):'0'}</td><td>${f(T.d[i])}</td></tr>`; }
+  const pol=rootList(T.d), cer=rootList(T.n);
+  const estable=roots(T.d).every(r=>r[0]<0);
+  document.getElementById('result').innerHTML=`
+    <div class="tf">${tfstr(T)}</div>
+    <h3>Coeficientes</h3>
+    <table><tr><th>Potencia</th><th>Numerador</th><th>Denominador</th></tr>${rows}</table>
+    <h3>Polos</h3><div class="tf">${pol.join('\n')}</div>
+    <h3>Ceros</h3><div class="tf">${cer.join('\n')||'(ninguno)'}</div>
+    <h3>Ganancia estacionaria C(0)/R(0)</h3>
+    <div class="tf">${f(k0,6)}</div>
+    <p>${Math.abs(k0-1)<1e-9?'<span class="ok">✓ Error en estado estacionario = 0: el cabezal llega exactamente a la posición pedida.</span>':'<span class="bad">Ganancia ≠ 1</span>'}
+    &nbsp; ${estable?'<span class="ok">Sistema estable (todos los polos en el semiplano izquierdo)</span>':'<span class="bad">Sistema inestable</span>'}</p>
+    <h3>Ω(s)/R(s) (salida antes de G₃)</h3>
+    <div class="tf">${tfstr(W)}</div>`;
+}
+run();
+</script>
+</body>
+</html>
